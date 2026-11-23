@@ -385,8 +385,10 @@ fn render_theme_toggle() -> Markup {
 fn render_breadcrumbs(items: &[BreadcrumbItem]) -> Markup {
     let last_index = items.len().saturating_sub(1);
 
+    // The `<nav>` and its `<ol>` are always rendered (even when empty) so the
+    // client-side `rebuildBreadcrumbs()` always has a stable container to fill
+    // after opening a pane.
     html! {
-        @if !items.is_empty() {
         nav class="zcast-breadcrumbs" data-zcast-breadcrumbs aria-label="Breadcrumb" {
             ol class="zcast-breadcrumbs__list" {
                 @for (index, item) in items.iter().enumerate() {
@@ -406,7 +408,6 @@ fn render_breadcrumbs(items: &[BreadcrumbItem]) -> Markup {
                     }
                 }
             }
-        }
         }
     }
 }
@@ -857,8 +858,7 @@ mod tests {
         assert!(
             css.contains("/_zcast/theme/fonts/libre-franklin-v12-latin-ext_latin-italic.woff2")
         );
-        assert!(css.contains("/_zcast/theme/fonts/libre-franklin-v12-latin-ext_latin-500.woff2"));
-        assert!(css.contains("/_zcast/theme/fonts/libre-franklin-v12-latin-ext_latin-700.woff2"));
+        assert!(css.contains("/_zcast/theme/fonts/libre-franklin-v12-latin-ext_latin-500.woff2"));        assert!(css.contains("/_zcast/theme/fonts/libre-franklin-v12-latin-ext_latin-700.woff2"));
         assert!(
             css.contains("/_zcast/theme/fonts/libre-franklin-v12-latin-ext_latin-700italic.woff2")
         );
@@ -968,5 +968,149 @@ mod tests {
             assert_eq!(resolved.content_type, bare.content_type);
             assert_eq!(resolved.bytes.len(), bare.bytes.len());
         }
+    }
+
+    fn theme_css() -> String {
+        let asset = DavidHewitsonTheme::new()
+            .get_asset("theme.css")
+            .expect("theme.css embedded");
+        String::from_utf8(asset.bytes.to_vec()).expect("css is utf-8")
+    }
+
+    fn panes_js() -> String {
+        let asset = DavidHewitsonTheme::new()
+            .get_asset("panes.js")
+            .expect("panes.js embedded");
+        String::from_utf8(asset.bytes.to_vec()).expect("js is utf-8")
+    }
+
+    // Issue #3 / #5: the breadcrumb container must always exist so the client
+    // can rebuild it, even when the server has no items to render.
+    #[test]
+    fn breadcrumb_nav_is_always_rendered() {
+        let theme = DavidHewitsonTheme::new();
+        let html = theme
+            .render_error(
+                404,
+                "Not found",
+                "Missing.",
+                SITE_TITLE,
+                ThemeColorMode::Dark,
+            )
+            .into_string();
+
+        assert!(html.contains(
+            "<nav class=\"zcast-breadcrumbs\" data-zcast-breadcrumbs aria-label=\"Breadcrumb\"><ol class=\"zcast-breadcrumbs__list\"></ol></nav>"
+        ));
+
+        // An empty `breadcrumbs` page still emits the container for the JS.
+        let mut page = base_page(ThemeColorMode::Dark);
+        page.cards = Vec::new();
+        page.breadcrumbs = Vec::new();
+        let empty = render(&page);
+        assert!(empty.contains("data-zcast-breadcrumbs"));
+        assert!(empty.contains("<ol class=\"zcast-breadcrumbs__list\"></ol>"));
+    }
+
+    // Issue #1: the card endpoint returns a JSON envelope, not raw HTML.
+    #[test]
+    fn panes_js_negotiates_json_card_payload() {
+        let js = panes_js();
+
+        assert!(js.contains("Accept: 'application/json, text/html'"));
+        assert!(js.contains("canonical_slug"));
+        assert!(js.contains("Content-Type"));
+        assert!(js.contains("response.headers.get"));
+        assert!(js.contains("parseCardJson"));
+        assert!(js.contains("data.html"));
+        // The raw body is only used as HTML when it is not a JSON envelope.
+        assert!(js.contains("text/html"));
+        assert!(js.contains("card.setAttribute('data-zcast-card-slug', payload.slug || slug)"));
+    }
+
+    // Issue #2: native trackpad horizontal scrolling must not be blocked.
+    #[test]
+    fn css_allows_horizontal_trackpad_scrolling() {
+        let css = theme_css();
+
+        // Pane-internal overscroll stops vertically but chains horizontally.
+        assert!(css.contains("overscroll-behavior-y: contain;"));
+        assert!(css.contains("overscroll-behavior-x: auto;"));
+        assert!(!css.contains("overscroll-behavior: contain;"));
+
+        // Snapping is gone and native scrolling stays crisp.
+        assert!(!css.contains("scroll-snap-type"));
+        assert!(!css.contains("scroll-snap-align"));
+        assert!(css.contains("scroll-behavior: auto;"));
+        assert!(!css.contains("scroll-behavior: smooth;"));
+    }
+
+    // Issue #5: newly opened panes slide in from the right.
+    #[test]
+    fn css_defines_card_slide_in_animation() {
+        let css = theme_css();
+
+        assert!(css.contains("@keyframes zcast-card-slide-in"));
+        assert!(css.contains("translateX(28px)"));
+        assert!(css.contains(".zcast-card--entering"));
+        assert!(css.contains("animation: zcast-card-slide-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both"));
+        assert!(css.contains("@media (prefers-reduced-motion: reduce)"));
+
+        // Reduced motion explicitly disables the slide-in.
+        let reduce_at = css.find("@media (prefers-reduced-motion: reduce)").unwrap();
+        let reduced = &css[reduce_at..];
+        assert!(reduced.contains(".zcast-card--entering"));
+        assert!(reduced.contains("animation: none !important"));
+    }
+
+    #[test]
+    fn panes_js_animates_and_reveals_inserted_cards() {
+        let js = panes_js();
+
+        assert!(js.contains("zcast-card--entering"));
+        assert!(js.contains("ENTERING_CLASS"));
+        assert!(js.contains("animationend"));
+        assert!(js.contains("requestAnimationFrame"));
+        // Layout is measured after insertion, so the reveal happens in rAF.
+        let reveal_at = js.find("function revealPane").expect("revealPane helper");
+        let reveal = &js[reveal_at..];
+        assert!(reveal.contains("window.requestAnimationFrame"));
+        assert!(reveal.contains("scrollToPane(card)"));
+    }
+
+    // Issue #4: autosave must not reset the caret while the title is focused.
+    #[test]
+    fn panes_js_update_card_meta_guards_focused_title() {
+        let js = panes_js();
+
+        let at = js.find("function updateCardMeta").expect("updateCardMeta");
+        let body = &js[at..];
+        let end = body.find("function onThemeToggle").expect("next function");
+        let meta = &body[..end];
+
+        assert!(meta.contains("document.activeElement !== node"));
+        assert!(meta.contains("current.trim() !== title.trim()"));
+        assert!(meta.contains("node.textContent = title"));
+        assert!(meta.contains("rebuildBreadcrumbs()"));
+        assert!(meta.contains("syncDocumentTitle()"));
+        assert!(meta.contains("pushUrl()"));
+    }
+
+    // Issue #3: breadcrumb clicks scroll, pulse and re-mark the current crumb.
+    #[test]
+    fn panes_js_breadcrumb_clicks_scroll_and_pulse() {
+        let js = panes_js();
+
+        assert!(js.contains("[data-zcast-breadcrumbs] [data-zcast-breadcrumb-slug]"));
+        assert!(js.contains("paneForSlug(crumbSlug)"));
+        assert!(js.contains("scrollToPane(crumbPane)"));
+        assert!(js.contains("pulse(crumbPane)"));
+        assert!(js.contains("markCurrentCrumb(crumb)"));
+        assert!(js.contains("zcast-breadcrumbs__item--current"));
+        assert!(js.contains("window.location.href = crumb.href"));
+
+        // Unsaved drafts keep an entry without a slug instead of crashing.
+        assert!(js.contains("New Note"));
+        assert!(js.contains("zcast-breadcrumbs__label"));
     }
 }

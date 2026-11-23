@@ -8,6 +8,11 @@
  *   and `download` links are left alone so "open in new tab" keeps working.
  * - Re-clicking an already-open note scrolls to it and pulses the pane instead
  *   of duplicating it.
+ * - Fetches cards from `GET /_zcast/cards/:slug`, which negotiates between a
+ *   JSON envelope (`{ card, html, canonical_slug }`) and a bare HTML fragment.
+ * - Slides newly opened panes in from the right and reveals them with a
+ *   single `requestAnimationFrame`-timed scroll (layout is measured after the
+ *   DOM insertion so the new pane's width is included).
  * - Syncs the stack to `/<root>?stack=a,b,c` with `history.pushState` and
  *   restores it on `popstate`.
  * - Exposes `window.ZcastPanes` for `zcast-editor-inline` (fresh draft panes,
@@ -18,6 +23,8 @@
   'use strict';
 
   var HIGHLIGHT_CLASS = 'zcast-card--highlight';
+  var ENTERING_CLASS = 'zcast-card--entering';
+  var CURRENT_CRUMB_CLASS = 'zcast-breadcrumbs__item--current';
   var MOBILE_QUERY = '(max-width: 768px)';
   var CARD_ENDPOINT = '/_zcast/cards/';
   var TOGGLE_KEY = 'zcast-color-mode';
@@ -154,6 +161,10 @@
     document.title = title && title !== site ? title + ' \u2014 ' + site : site;
   }
 
+  function crumbLabel(card) {
+    return titleOf(card) || 'New Note';
+  }
+
   function rebuildBreadcrumbs() {
     var nav = document.querySelector('[data-zcast-breadcrumbs]');
     if (!nav) {
@@ -166,24 +177,31 @@
 
     cards.forEach(function (card, index) {
       var slug = slugOf(card);
-      if (!slug) {
-        return;
-      }
       var isCurrent = index === cards.length - 1;
 
       var item = document.createElement('li');
       item.className =
-        'zcast-breadcrumbs__item' + (isCurrent ? ' zcast-breadcrumbs__item--current' : '');
+        'zcast-breadcrumbs__item' + (isCurrent ? ' ' + CURRENT_CRUMB_CLASS : '');
 
-      var link = document.createElement('a');
-      link.className = 'zcast-breadcrumbs__link';
-      link.href = '/' + encodeURIComponent(slug);
-      link.setAttribute('data-zcast-breadcrumb', '');
-      link.setAttribute('data-zcast-breadcrumb-slug', slug);
-      link.setAttribute('aria-current', isCurrent ? 'page' : 'false');
-      link.textContent = titleOf(card);
+      if (slug) {
+        var link = document.createElement('a');
+        link.className = 'zcast-breadcrumbs__link';
+        link.href = '/' + encodeURIComponent(slug);
+        link.setAttribute('data-zcast-breadcrumb', '');
+        link.setAttribute('data-zcast-breadcrumb-slug', slug);
+        link.setAttribute('aria-current', isCurrent ? 'page' : 'false');
+        link.textContent = crumbLabel(card);
+        item.appendChild(link);
+      } else {
+        // Unsaved drafts have no slug yet: keep the trail intact with a plain
+        // label instead of throwing away the whole breadcrumb entry.
+        var label = document.createElement('span');
+        label.className = 'zcast-breadcrumbs__label';
+        label.setAttribute('aria-current', isCurrent ? 'page' : 'false');
+        label.textContent = crumbLabel(card);
+        item.appendChild(label);
+      }
 
-      item.appendChild(link);
       list.appendChild(item);
     });
 
@@ -191,38 +209,166 @@
     nav.appendChild(list);
   }
 
+  function markCurrentCrumb(link) {
+    if (!link || typeof link.closest !== 'function') {
+      return;
+    }
+    var nav = link.closest('[data-zcast-breadcrumbs]');
+    if (!nav) {
+      return;
+    }
+
+    var items = nav.querySelectorAll('.zcast-breadcrumbs__item');
+    Array.prototype.forEach.call(items, function (item) {
+      item.classList.remove(CURRENT_CRUMB_CLASS);
+      var anchor = item.querySelector('[data-zcast-breadcrumb]');
+      if (anchor) {
+        anchor.setAttribute('aria-current', 'false');
+      }
+    });
+
+    var current = link.closest('.zcast-breadcrumbs__item');
+    if (current) {
+      current.classList.add(CURRENT_CRUMB_CLASS);
+    }
+    link.setAttribute('aria-current', 'page');
+  }
+
+  // The endpoint returns `{ card, html, canonical_slug }` as JSON when asked
+  // for JSON, and a bare HTML fragment otherwise. Normalise both shapes into
+  // `{ html, slug }` so callers never have to care which one arrived.
+  function readCardPayload(data, fallbackSlug) {
+    var payload = {
+      html: '',
+      slug: fallbackSlug || ''
+    };
+    if (!data || typeof data !== 'object') {
+      return payload;
+    }
+    if (typeof data.html === 'string') {
+      payload.html = data.html;
+    }
+    var canonical = data.canonical_slug || data.canonicalSlug || '';
+    if (typeof canonical === 'string' && canonical) {
+      payload.slug = canonical;
+    } else if (!payload.slug && data.card && typeof data.card.slug === 'string') {
+      payload.slug = data.card.slug;
+    }
+    return payload;
+  }
+
+  function parseCardJson(body) {
+    if (typeof body !== 'string') {
+      return null;
+    }
+    var trimmed = body.trim();
+    if (!trimmed || trimmed.charAt(0) !== '{') {
+      return null;
+    }
+    try {
+      var data = JSON.parse(trimmed);
+      if (data && typeof data === 'object' && typeof data.html === 'string') {
+        return data;
+      }
+    } catch (error) {
+      // Not JSON — treat it as an HTML fragment.
+    }
+    return null;
+  }
+
   function fetchCard(slug, done) {
     var url = CARD_ENDPOINT + encodeURIComponent(slug);
     window
       .fetch(url, {
-        headers: { Accept: 'text/html' },
+        headers: { Accept: 'application/json, text/html' },
         credentials: 'same-origin'
       })
       .then(function (response) {
         if (!response.ok) {
           throw new Error('HTTP ' + response.status);
         }
-        return response.text();
+
+        var contentType = '';
+        if (response.headers && typeof response.headers.get === 'function') {
+          contentType = response.headers.get('Content-Type') || '';
+        }
+
+        return response.text().then(function (body) {
+          var data = parseCardJson(body);
+          if (data) {
+            return readCardPayload(data, slug);
+          }
+          if (contentType.indexOf('json') !== -1) {
+            // JSON content type but an unparseable body — nothing usable.
+            return { html: '', slug: slug };
+          }
+          // Plain `text/html` fragment: trust it as-is.
+          return { html: body, slug: slug };
+        });
       })
-      .then(function (html) {
-        done(null, html);
+      .then(function (payload) {
+        done(null, payload);
       })
       .catch(function (error) {
         done(error || new Error('fetch failed'));
       });
   }
 
-  function insertAfter(anchor, html) {
+  function animateIn(card) {
+    if (!card) {
+      return;
+    }
+
+    card.classList.remove(ENTERING_CLASS);
+    // Force a reflow so the slide-in restarts even when a pane is re-inserted.
+    void card.offsetWidth;
+    card.classList.add(ENTERING_CLASS);
+
+    var clear = function () {
+      card.classList.remove(ENTERING_CLASS);
+      card.removeEventListener('animationend', clear);
+    };
+    card.addEventListener('animationend', clear);
+    window.setTimeout(clear, 600);
+  }
+
+  // Reveal a freshly inserted pane: measure inside `requestAnimationFrame` so
+  // the browser has already laid the new pane out (and its width is known).
+  function revealPane(card) {
+    if (!card) {
+      return;
+    }
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(function () {
+        scrollToPane(card);
+      });
+    } else {
+      window.setTimeout(function () {
+        scrollToPane(card);
+      }, 0);
+    }
+  }
+
+  function insertAfter(anchor, html, reveal) {
+    var card = null;
+
     if (anchor) {
       anchor.insertAdjacentHTML('afterend', html);
-      return anchor.nextElementSibling;
+      card = anchor.nextElementSibling;
+    } else {
+      var container = panesContainer();
+      if (!container) {
+        return null;
+      }
+      container.insertAdjacentHTML('beforeend', html);
+      card = container.lastElementChild;
     }
-    var container = panesContainer();
-    if (!container) {
-      return null;
+
+    animateIn(card);
+    if (reveal !== false) {
+      revealPane(card);
     }
-    container.insertAdjacentHTML('beforeend', html);
-    return container.lastElementChild;
+    return card;
   }
 
   function openSlug(slug, anchor) {
@@ -241,8 +387,8 @@
       return;
     }
 
-    fetchCard(slug, function (error, html) {
-      if (error) {
+    fetchCard(slug, function (error, payload) {
+      if (error || !payload || !payload.html) {
         // Graceful degradation: behave like a plain link.
         window.location.href = '/' + encodeURIComponent(slug);
         return;
@@ -259,17 +405,15 @@
       }
 
       truncateAfter(index);
-      var card = insertAfter(anchor, html);
+      var card = insertAfter(anchor, payload.html);
       if (!card) {
         return;
       }
 
-      if (!slugOf(card)) {
-        card.setAttribute('data-zcast-card-slug', slug);
-      }
+      // `canonical_slug` is authoritative (aliases/redirects resolve here).
+      card.setAttribute('data-zcast-card-slug', payload.slug || slug);
 
       rebuildBreadcrumbs();
-      scrollToPane(card);
       syncDocumentTitle();
       pushUrl();
     });
@@ -297,12 +441,16 @@
         window.location.href = crumb.href;
         return;
       }
-      var crumbPane = paneForSlug(crumbSlug);
-      if (crumbPane) {
-        scrollToPane(crumbPane);
-      } else {
+      var crumbPane = crumbSlug ? paneForSlug(crumbSlug) : null;
+      if (!crumbPane) {
         window.location.href = crumb.href;
+        return;
       }
+
+      scrollToPane(crumbPane);
+      // Visible feedback even when the pane is already (partly) on screen.
+      pulse(crumbPane);
+      markCurrentCrumb(crumb);
       return;
     }
 
@@ -415,8 +563,8 @@
       }
 
       var slug = remaining.shift();
-      fetchCard(slug, function (error, html) {
-        if (error) {
+      fetchCard(slug, function (error, payload) {
+        if (error || !payload || !payload.html) {
           window.location.href = '/' + encodeURIComponent(slug);
           return;
         }
@@ -427,10 +575,11 @@
         }
 
         truncateAfter(index);
-        anchor = insertAfter(anchor, html);
+        // Restoring a stack reveals the deepest pane once, not on every insert.
+        anchor = insertAfter(anchor, payload.html, false);
 
-        if (anchor && !slugOf(anchor)) {
-          anchor.setAttribute('data-zcast-card-slug', slug);
+        if (anchor) {
+          anchor.setAttribute('data-zcast-card-slug', payload.slug || slug);
         }
 
         loadNext();
@@ -466,7 +615,6 @@
     }
 
     rebuildBreadcrumbs();
-    scrollToPane(card);
     syncDocumentTitle();
     pushUrl();
     return card;
@@ -484,7 +632,12 @@
     if (typeof title === 'string' && title.length) {
       var node = cardEl.querySelector('[data-zcast-card-title]');
       if (node) {
-        node.textContent = title;
+        var current = node.textContent || '';
+        // Autosave must never yank the caret back to offset 0 while the title
+        // is being typed, and identical text needs no rewrite at all.
+        if (document.activeElement !== node && current.trim() !== title.trim()) {
+          node.textContent = title;
+        }
       }
     }
 
