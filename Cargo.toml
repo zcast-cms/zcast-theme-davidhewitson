@@ -1,0 +1,16 @@
+[package]
+name = "zcast-theme-davidhewitson"
+version = "0.1.0"
+edition = "2024"
+description = "Editorial dark/light/auto sliding-panes theme for zcast, inspired by davidhewitson.co.uk"
+license = "MIT"
+repository = "https://github.com/zcast-cms/zcast-theme-davidhewitson"
+
+[dependencies]
+zcast-interfaces = { git = "https://github.com/zcast-cms/zcast-interfaces.git", branch = "main" }
+maud = "0.27"
+rust-embed = "8"
+serde_json = "1"
+
+[dev-dependencies]
+chrono = "0.4"
