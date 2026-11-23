@@ -13,10 +13,12 @@
  * - Slides newly opened panes in from the right and reveals them with a
  *   single `requestAnimationFrame`-timed scroll (layout is measured after the
  *   DOM insertion so the new pane's width is included).
+ * - Closes any pane except the root/leftmost card via `[data-zcast-close-pane]`,
+ *   then reveals the new rightmost pane and re-syncs breadcrumbs, title and URL.
  * - Syncs the stack to `/<root>?stack=a,b,c` with `history.pushState` and
  *   restores it on `popstate`.
  * - Exposes `window.ZcastPanes` for `zcast-editor-inline` (fresh draft panes,
- *   renames, breadcrumb refreshes).
+ *   renames, breadcrumb refreshes) plus `openSlug`/`closePane`.
  * ========================================================================== */
 
 (function () {
@@ -419,6 +421,38 @@
     });
   }
 
+  // Remove a pane from the stack. The root/leftmost card is the entry point of
+  // the site and can never be closed. Returns `true` when a pane was removed.
+  function closePane(pane) {
+    if (!pane) {
+      return false;
+    }
+
+    var cards = allCards();
+    var index = cards.indexOf(pane);
+    if (index <= 0) {
+      return false;
+    }
+
+    // Closing the rightmost pane reveals the one before it; closing a middle
+    // pane keeps the current rightmost pane as the new leading edge.
+    var target = index === cards.length - 1 ? cards[index - 1] : cards[cards.length - 1];
+
+    if (pane.parentNode) {
+      pane.parentNode.removeChild(pane);
+    }
+
+    if (target) {
+      // Reveal after layout has settled so the remaining scroll offsets are known.
+      revealPane(target);
+    }
+
+    rebuildBreadcrumbs();
+    syncDocumentTitle();
+    pushUrl();
+    return true;
+  }
+
   function onDocumentClick(event) {
     if (event.defaultPrevented || event.button !== 0) {
       return;
@@ -429,6 +463,18 @@
 
     var target = event.target;
     if (!target || typeof target.closest !== 'function') {
+      return;
+    }
+
+    // Pane close button: remove this pane (never the root card) and reveal the
+    // new rightmost pane. Ignore buttons outside the sliding stack.
+    var closeButton = target.closest('[data-zcast-close-pane]');
+    if (closeButton) {
+      event.preventDefault();
+      var closingPane = closeButton.closest('.zcast-card');
+      if (closingPane && closingPane.closest('[data-zcast-panes]')) {
+        closePane(closingPane);
+      }
       return;
     }
 
@@ -696,6 +742,8 @@
 
   window.ZcastPanes = {
     appendCardHtml: appendCardHtml,
+    closePane: closePane,
+    openSlug: openSlug,
     updateCardMeta: updateCardMeta,
     rebuildBreadcrumbs: rebuildBreadcrumbs,
     scrollToPane: scrollToPane

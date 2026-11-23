@@ -424,6 +424,15 @@ fn render_card_markup(card: &CardView, toolbar: &str, footer: &str, is_admin: bo
             data-zcast-card-private=(if card.private { "true" } else { "false" })
             data-zcast-card-admin=(if is_admin { "true" } else { "false" })
         {
+            // Rendered for readers and admins alike (independent of
+            // `show_toolbar`); CSS hides it on the root/leftmost card.
+            button
+                type="button"
+                class="zcast-card__close"
+                data-zcast-close-pane
+                aria-label="Close pane"
+                title="Close pane"
+            { "\u{d7}" }
             @if show_toolbar {
                 div class="zcast-card__toolbar" data-zcast-card-toolbar {
                     (PreEscaped(toolbar))
@@ -1094,6 +1103,196 @@ mod tests {
         assert!(meta.contains("rebuildBreadcrumbs()"));
         assert!(meta.contains("syncDocumentTitle()"));
         assert!(meta.contains("pushUrl()"));
+    }
+
+    // Issue #6: the slot's `+ New Note` button is themed as a flat pill and its
+    // active state can never fall back to Firefox's native 3D outset bevel.
+    #[test]
+    fn css_styles_header_button_as_flat_pill() {
+        let css = theme_css();
+
+        let at = css.find(".zcast-header-btn {").expect("base button rule");
+        let block = &css[at..at + css[at..].find('}').expect("closing brace")];
+        for needle in [
+            "appearance: none;",
+            "border: 1px solid var(--zcast-border);",
+            "border-radius: 999px;",
+            "background: transparent;",
+            "color: var(--zcast-text-muted);",
+            "padding: 0.35rem 0.8rem;",
+            "font: inherit;",
+            "font-size: 0.82rem;",
+            "font-weight: 500;",
+            "line-height: 1.3;",
+            "cursor: pointer;",
+            "transition:",
+        ] {
+            assert!(block.contains(needle), "missing `{needle}` in base rule");
+        }
+
+        let hover_at = css.find(".zcast-header-btn:hover {").expect("hover rule");
+        let hover = &css[hover_at..hover_at + css[hover_at..].find('}').expect("brace")];
+        assert!(hover.contains("color: var(--zcast-text-strong);"));
+        assert!(hover.contains("border-color: var(--zcast-text-muted);"));
+        assert!(hover.contains("background: var(--zcast-accent-subtle);"));
+
+        // Active draft state: flat, muted, and explicitly `solid`.
+        let draft_at = css
+            .find(".zcast-header-btn[data-draft-active=\"true\"] {")
+            .expect("draft-active rule");
+        let draft = &css[draft_at..draft_at + css[draft_at..].find('}').expect("brace")];
+        assert!(draft.contains("border-style: solid;"));
+        assert!(draft.contains("border-color: var(--zcast-border);"));
+        assert!(draft.contains("background: var(--zcast-accent-subtle);"));
+        assert!(draft.contains("color: var(--zcast-text-muted);"));
+        assert!(draft.contains("opacity: 0.78;"));
+        assert!(!draft.contains("outset"));
+    }
+
+    // Issue #7: selection ink/background are explicit tokens per colour scheme
+    // so selected wikilink text stays high-contrast in both themes.
+    #[test]
+    fn css_defines_high_contrast_selection_tokens() {
+        let css = theme_css();
+
+        // Dark default and explicit dark share the same wash.
+        assert_eq!(
+            css.matches("--zcast-selection-bg: rgba(255, 255, 255, 0.24);")
+                .count(),
+            2
+        );
+        assert_eq!(
+            css.matches("--zcast-selection-text: var(--zcast-text-strong);")
+                .count(),
+            3
+        );
+
+        let light_at = css
+            .find(":root[data-theme=\"light\"] {")
+            .expect("light token block");
+        let light = &css[light_at..light_at + css[light_at..].find('}').expect("brace")];
+        assert!(light.contains("--zcast-selection-bg: rgba(0, 0, 0, 0.14);"));
+        assert!(light.contains("--zcast-selection-text: var(--zcast-text-strong);"));
+
+        // The global selection rule consumes the tokens instead of accent-on-bg.
+        assert!(css.contains(
+            "::selection {\n  background: var(--zcast-selection-bg);\n  color: var(--zcast-selection-text);\n}"
+        ));
+        assert!(!css.contains(
+            "::selection {\n  background: var(--zcast-accent);\n  color: var(--zcast-bg);\n}"
+        ));
+    }
+
+    // Issue #8: every card carries the close button, for readers and admins,
+    // whether or not a toolbar slot is present.
+    #[test]
+    fn cards_render_close_pane_button_for_readers_and_admins() {
+        let close_markup = concat!(
+            "<button type=\"button\" class=\"zcast-card__close\" data-zcast-close-pane ",
+            "aria-label=\"Close pane\" title=\"Close pane\">\u{d7}</button>"
+        );
+
+        let mut page = base_page(ThemeColorMode::Dark);
+        page.is_admin = false;
+        page.cards = vec![card("root", "Root", false), card("leaf", "Leaf", false)];
+        let html = render(&page);
+        assert_eq!(html.matches(close_markup).count(), 2);
+        assert_eq!(html.matches("data-zcast-close-pane").count(), 2);
+
+        // Admin rendering keeps the close button alongside the toolbar...
+        let theme = DavidHewitsonTheme::new();
+        let admin_frag = theme
+            .render_card(
+                &card("fragment", "Fragment", false),
+                &CardRenderContext {
+                    is_admin: true,
+                    ..CardRenderContext::default()
+                },
+            )
+            .into_string();
+        assert!(admin_frag.contains(close_markup));
+        assert!(admin_frag.contains("data-zcast-card-toolbar"));
+
+        // ...and a public reader without any toolbar slot still gets one.
+        let public_frag = theme
+            .render_card(
+                &card("fragment", "Fragment", false),
+                &CardRenderContext::default(),
+            )
+            .into_string();
+        assert!(public_frag.contains(close_markup));
+        assert!(!public_frag.contains("data-zcast-card-toolbar"));
+
+        // The close button is inside the article, ahead of the title.
+        let close_at = html.find(close_markup).expect("close button");
+        let title_at = html.find("zcast-card-title").expect("card title");
+        assert!(close_at < title_at);
+    }
+
+    // Issue #8: the close button is positioned in the card chrome, hidden on the
+    // root card and in print.
+    #[test]
+    fn css_positions_and_hides_card_close_button() {
+        let css = theme_css();
+
+        let at = css.find(".zcast-card__close {").expect("close button rule");
+        let block = &css[at..at + css[at..].find('}').expect("brace")];
+        assert!(block.contains("position: absolute;"));
+        assert!(block.contains("top: 0.9rem;"));
+        assert!(block.contains("right: 1rem;"));
+        assert!(block.contains("width: 28px;"));
+        assert!(block.contains("height: 28px;"));
+        assert!(block.contains("border-radius: 999px;"));
+        assert!(block.contains("background: transparent;"));
+        assert!(block.contains("color: var(--zcast-text-muted);"));
+
+        assert!(css.contains(".zcast-card__close:hover"));
+        assert!(css.contains(".zcast-card__close:focus-visible"));
+        assert!(
+            css.contains(".zcast-card:first-child [data-zcast-close-pane] {\n  display: none;\n}")
+        );
+
+        let print_at = css.find("@media print {").expect("print block");
+        let print = &css[print_at..];
+        assert!(print.contains(".zcast-card__close,"));
+    }
+
+    // Issue #8: clients can close panes, but never the root card.
+    #[test]
+    fn panes_js_close_pane_guards_root_and_syncs_state() {
+        let js = panes_js();
+
+        let at = js
+            .find("function closePane(pane)")
+            .expect("closePane helper");
+        let body = &js[at..];
+        let end = body
+            .find("function onDocumentClick")
+            .expect("next function");
+        let close = &body[..end];
+
+        assert!(close.contains("var index = cards.indexOf(pane);"));
+        assert!(close.contains("if (index <= 0) {"));
+        assert!(close.contains("return false;"));
+        assert!(close.contains("pane.parentNode.removeChild(pane);"));
+        assert!(close.contains("revealPane(target)"));
+        assert!(close.contains("rebuildBreadcrumbs();"));
+        assert!(close.contains("syncDocumentTitle();"));
+        assert!(close.contains("pushUrl();"));
+        assert!(close.contains("return true;"));
+
+        // Click handling routes `[data-zcast-close-pane]` to `closePane`.
+        assert!(js.contains("target.closest('[data-zcast-close-pane]')"));
+        assert!(js.contains("closeButton.closest('.zcast-card')"));
+        assert!(js.contains("closingPane.closest('[data-zcast-panes]')"));
+        assert!(js.contains("closePane(closingPane);"));
+
+        // Both helpers are part of the public panes API.
+        let api = js.find("window.ZcastPanes = {").expect("panes API");
+        let api_body = &js[api..api + js[api..].find('}').expect("api brace")];
+        assert!(api_body.contains("closePane: closePane,"));
+        assert!(api_body.contains("openSlug: openSlug,"));
+        assert!(api_body.contains("appendCardHtml: appendCardHtml,"));
     }
 
     // Issue #3: breadcrumb clicks scroll, pulse and re-mark the current crumb.
