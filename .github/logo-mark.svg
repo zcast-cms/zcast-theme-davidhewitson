@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="zcast logo">
+  <rect width="512" height="512" rx="96" fill="#1d1d1d"/>
+  <rect x="3" y="3" width="506" height="506" rx="93" fill="none" stroke="#3a3a3a" stroke-width="3"/>
+  <g transform="translate(0,0) scale(1.0)">
+    <defs>
+      <filter id="paneShadow" x="-15%" y="-15%" width="140%" height="140%">
+        <feDropShadow dx="-8" dy="8" stdDeviation="10" flood-color="#000000" flood-opacity="0.45"/>
+      </filter>
+    </defs>
+
+    <!-- Back pane 1 -->
+    <rect x="70" y="108" width="244" height="316" rx="18"
+          fill="#252525" stroke="#3a3a3a" stroke-width="4"/>
+    <line x1="94" y1="152" x2="116" y2="152" stroke="#484848" stroke-width="5" stroke-linecap="round"/>
+    <line x1="94" y1="176" x2="110" y2="176" stroke="#3c3c3c" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- Middle pane 2 -->
+    <rect x="122" y="92" width="248" height="328" rx="18"
+          fill="#2e2e2e" stroke="#4a4a4a" stroke-width="4" filter="url(#paneShadow)"/>
+    <line x1="146" y1="138" x2="168" y2="138" stroke="#5c5c5c" stroke-width="5" stroke-linecap="round"/>
+    <line x1="146" y1="162" x2="162" y2="162" stroke="#4a4a4a" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- Front focal card -->
+    <rect x="174" y="76" width="256" height="360" rx="20"
+          fill="#1d1d1d" stroke="#ededed" stroke-width="6" filter="url(#paneShadow)"/>
+
+    <!-- Subtle top card index bar -->
+    <line x1="210" y1="116" x2="256" y2="116" stroke="#525252" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="388" cy="116" r="6" fill="#525252"/>
+
+    <!-- Geometric 'Z' monogram -->
+    <path d="M 218 176 L 386 176 L 386 204 L 263 324 L 386 324 L 386 356 L 218 356 L 218 328 L 341 208 L 218 208 Z"
+          fill="#ffffff"/>
+
+    <!-- Subtle footer link indicators -->
+    <line x1="218" y1="396" x2="306" y2="396" stroke="#454545" stroke-width="5" stroke-linecap="round"/>
+    <line x1="320" y1="396" x2="354" y2="396" stroke="#353535" stroke-width="5" stroke-linecap="round"/>
+  </g>
+</svg>

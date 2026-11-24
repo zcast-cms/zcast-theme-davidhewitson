@@ -1,4 +1,6 @@
-# `zcast-theme-davidhewitson`
+<p align="center">
+  <img src=".github/logo-banner.svg" alt="zcast-theme-davidhewitson — Editorial dark/light sliding-panes theme for zcast" width="880" />
+</p>
 
 Editorial dark/light/auto sliding-panes theme for [`zcast`](https://github.com/zcast-cms/zcast), inspired by the `Libre Franklin` typography and `#1d1d1d` dark aesthetic of `davidhewitson.co.uk`.
 
